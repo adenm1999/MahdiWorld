@@ -1,51 +1,41 @@
-# 🧩 Domo ETL Column Lineage Tracker
+# Task 3 – Customer Data Cleansing  
+**Ataccama Pre-Interview Assessment**
 
-## Overview
+---
 
-This project automates the tracking of column transformations in Domo ETL flows to establish full lineage from source to final output. It helps ensure traceability and consistency across your data pipelines by mapping transformed column names back to their original metadata descriptions.
+## How to run
 
-## Key Features
+**Requirements:** Python 3.10+ and `pandas`
 
-- 🔐 Authenticates securely into Domo using session token.
-- 🔄 Retrieves renaming metadata from a central Domo dataset.
-- 📊 Updates ETL datasets with accurate column descriptions.
-- 🔍 Tracks column name changes through a sequence-based method.
-- 🧠 Maintains original and final column names even through passive transformation steps.
+```bash
+pip install pandas
 
-## Problem Statement
+# Place customers.csv in the same directory as the script, then:
+python cleanse_customers.py
+```
 
-Domo ETL flows often include transformations that alter column names using tiles like:
-- `Select Columns`
-- `Alter Columns`
-- `Join`
+The script reads `customers.csv` and writes `customers_cleansed.csv` to the same directory.
 
-When multiple datasets are involved, tracking the lineage of columns becomes difficult. Some steps modify column names; others do not.
+---
 
-## Solution
+## What the script does
 
-We implemented a **sequence-based transformation tracker**:
-- Parsed the JSON structure of Domo ETL dataflows.
-- Assigned a numeric sequence to each transformation tile.
-- Tracked when a column name change occurred (e.g., `1, 0, 0, 0, 0, 2`) where:
-  - `1` = start of a transformation
-  - `0` = passive tiles
-  - `2` = actual renaming step
-- Captured both the original and final names of each column.
-- Remapped these values back into Domo datasets using Domo's Data API.
+| Step | Detail |
+|------|--------|
+| **Load** | Reads the semicolon-delimited CSV with all columns as strings to avoid pandas mis-typing. |
+| **Name cleansing** | Strips leading/trailing whitespace → collapses internal duplicate spaces → applies Title Case. |
+| **Date parsing** | Tries four common formats in order (`M/D/YYYY`, `YYYY-MM-DD`, `D/M/YYYY`, `D.M.YYYY`). Empty or unparseable values become `NaT` (null). |
+| **`days_until_next_control`** | Integer: *(src_date_next_control − today)*. Negative = already past. `NaT` next-control date → `NaN`. |
+| **`control_status`** | `OVERDUE` (< 0 days), `DUE_SOON` (0–30 days), `OK` (> 30 days), `UNKNOWN` (date missing/invalid). |
+| **Export** | Writes the cleansed file with dates in ISO `YYYY-MM-DD` format for portability. |
 
-This approach ensures that even if a column goes through multiple tiles, its lineage from source to target is maintained accurately.
+---
 
-## Usage
+## Assumptions
 
-1. **Set Domo Credentials**
-   Update the `domo_instance`, `email`, and `password` variables.
-
-2. **Prepare Metadata Mapping**
-   Ensure your metadata table (e.g., `DIM_GoldMetadataRepository| Renamed`) has the following columns:
-   - `Dataset_ID`
-   - `rename`
-   - `Column Description`
-
-3. **Run the Script**
-   ```bash
-   python etl_column_remap.py
+1. **Delimiter** is `;` (semicolon), as found in the source file.  
+2. **Date format** in the source is primarily `M/D/YYYY`.  Multiple formats are tried so the script is resilient to mixed formats in the same column.  
+3. **Missing dates** (empty string or truly unparseable) are treated as `NaT`; the derived `control_status` is set to `UNKNOWN` rather than raising an error.  
+4. **`DUE_SOON` window** is 30 days. This is configurable via the `DUE_SOON_DAYS` constant at the top of the script.  
+5. **Name normalisation** uses Title Case (`MC RAE HOLDINGS LTD` → `Mc Rae Holdings Ltd`). If the business requires a different casing convention (e.g., all-caps for legal names) this is a one-line change.  
+6. **No rows are dropped** – even rows with invalid/missing dates are retained in the output (with nulls) so no data is silently lost.
