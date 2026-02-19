@@ -1,84 +1,66 @@
-import requests
-import json
-import domojupyter as domo
-import time
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+from datetime import date
 
-def authenticate(domo_instance, email, password):
-    auth_url = f"https://{domo_instance}.domo.com/api/content/v2/authentication"
-    payload = {
-        "method": "password",
-        "emailAddress": email,
-        "password": password
-    }
-    headers = {"Content-Type": "application/json"}
+INPUT_FILE = "customers.csv"
+OUTPUT_FILE = "customers_cleansed.csv"
+DUE_SOON_DAYS = 30
+DATE_FORMATS = ["%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y"]
 
-    response = requests.post(auth_url, json=payload, headers=headers)
-    if response.status_code == 200:
-        print("Authentication successful")
-        return response.json().get('sessionToken')
-    else:
-        raise Exception(f"Authentication failed: {response.status_code} - {response.text}")
 
-def get_dataset_mappings():
-    df = domo.read_dataframe('INPUT DATASET NAME', query='SELECT * FROM table')
-    df = df.fillna('')
-    return df.groupby('Dataset_ID').apply(
-        lambda x: x[['rename', 'Column Description']].to_dict('records')
-    ).to_dict()
+def parse_date(value: str) -> pd.Timestamp:
+    if not isinstance(value, str) or value.strip() == "":
+        return pd.NaT
+    for fmt in DATE_FORMATS:
+        try:
+            return pd.to_datetime(value.strip(), format=fmt)
+        except (ValueError, TypeError):
+            continue
+    return pd.NaT
 
-def remap_dataset(domo_instance, session_token, dataset_id, columns):
-    start_time = time.time()
-    remap_payload = {
-        "columns": [{"name": col['rename'], "description": col['Column Description']} for col in columns]
-    }
-    url = f"https://{domo_instance}.domo.com/api/query/v1/datasources/{dataset_id}/wrangle"
-    headers = {
-        'x-domo-authentication': session_token,
-        'Content-Type': 'application/json'
-    }
 
-    try:
-        response = requests.post(url, headers=headers, json=remap_payload)
-        if response.status_code == 200:
-            print(f"Remapping successful: {dataset_id}")
-        else:
-            print(f"Remapping failed for {dataset_id}: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"rror processing {dataset_id}: {str(e)}")
+def cleanse_name(name: str) -> str:
+    if not isinstance(name, str):
+        return name
+    return re.sub(r"\s+", " ", name.strip()).title()
 
-    duration = time.time() - start_time
-    print(f"⏱ Time taken for {dataset_id}: {duration:.2f}s")
-    time.sleep(2)
 
-def authenticate_and_remap(domo_instance, email, password, max_workers=5):
-    session_token = authenticate(domo_instance, email, password)
-    dataset_mappings = get_dataset_mappings()
-    total_datasets = len(dataset_mappings)
-    print(f"\n🔍 Total datasets to process: {total_datasets}\n")
-    processed_count = 0
+def control_status(days) -> str:
+    if days is None or pd.isna(days):
+        return "UNKNOWN"
+    if days < 0:
+        return "OVERDUE"
+    if days <= DUE_SOON_DAYS:
+        return "DUE_SOON"
+    return "OK"
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(remap_dataset, domo_instance, session_token, ds_id, cols): ds_id
-            for ds_id, cols in dataset_mappings.items()
-        }
 
-        for future in as_completed(futures):
-            ds_id = futures[future]
-            try:
-                future.result()
-                processed_count += 1
-            except Exception as e:
-                print(f"❗ Exception for dataset {ds_id}: {e}")
+def main():
+    df = pd.read_csv(INPUT_FILE, sep=";", dtype=str, keep_default_na=False)
+    print(f"Loaded {len(df):,} rows from '{INPUT_FILE}'.")
 
-    print(f"Finished processing. Datasets attempted: {total_datasets}, successfully processed: {processed_count}")
+    df["src_customer_name"] = df["src_customer_name"].apply(cleanse_name)
 
-domo_instance = ''
-email = ''
-password = ''
+    date_cols = ["src_date_created", "src_date_last_control", "src_date_next_control"]
+    for col in date_cols:
+        df[col] = df[col].apply(parse_date)
 
-authenticate_and_remap(domo_instance, email, password)
+    today = pd.Timestamp(date.today())
+    df["days_until_next_control"] = (df["src_date_next_control"] - today).dt.days
+    df["control_status"] = df["days_until_next_control"].apply(control_status)
+
+    print(df["control_status"].value_counts().to_string())
+    print(f"Rows with missing next_control date: {df['src_date_next_control'].isna().sum():,}")
+
+    out = df.copy()
+    for col in date_cols:
+        out[col] = out[col].dt.strftime("%Y-%m-%d")
+
+    out.to_csv(OUTPUT_FILE, sep=";", index=False)
+    print(f"\nCleansed file written to '{OUTPUT_FILE}'.")
+
+
+if __name__ == "__main__":
+    main()
 
 
